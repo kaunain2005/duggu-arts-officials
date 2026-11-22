@@ -105,10 +105,7 @@ export const categoryTypeSchema = z.enum(['flowers', 'bouquets', 'crafts', 'othe
 
 export const categoryBaseSchema = z.object({
   name: z.string().min(1, 'Category name is required'),
-  slug: z
-    .string()
-    .min(1)
-    .regex(/^[a-z0-9-]+$/, 'Slug must be lowercase alphanumeric with hyphens'),
+  slug: z.string().min(1).regex(/^[a-z0-9-]+$/, 'Slug must be lowercase alphanumeric with hyphens'),
   description: z.string().optional(),
   imageUrl: z.string().url().optional(),
   imagePublicId: z.string().optional(),
@@ -116,18 +113,17 @@ export const categoryBaseSchema = z.object({
   parentId: z.string().optional(),
   sortOrder: z.number().int().default(0),
   isActive: z.boolean().default(true),
+  productCount: z.number().int().nonnegative().default(0),
 });
 
 export const categoryCreateSchema = categoryBaseSchema.extend({
   // slug is auto-generated from name if not provided
-  slug: z
-    .string()
-    .regex(/^[a-z0-9-]+$/)
-    .optional(),
+  slug: z.string().regex(/^[a-z0-9-]+$/).optional(),
 });
 
 export const categoryUpdateSchema = categoryBaseSchema.partial().extend({
   id: z.string().min(1),
+  newSlug: z.string().regex(/^[a-z0-9-]+$/).optional(),
 });
 
 export const categoryReorderSchema = z.object({
