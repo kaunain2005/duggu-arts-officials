@@ -17,6 +17,14 @@ export const paginationSchema = z.object({
   sortOrder: z.enum(['asc', 'desc']).default('desc'),
 });
 
+// Cursor-based pagination
+export const cursorPaginationSchema = z.object({
+  cursor: z.string().optional(), // Firestore document snapshot cursor
+  limit: z.coerce.number().int().positive().max(100).default(20),
+  sortBy: z.string().optional(),
+  sortOrder: z.enum(['asc', 'desc']).default('desc'),
+});
+
 export const addressSchema = z.object({
   label: z.enum(['home', 'work', 'other']).default('home'),
   fullName: z.string().min(1, 'Full name is required'),
@@ -93,7 +101,9 @@ export const productVariantSchema = z.object({
   leadTimeDays: z.number().int().positive().optional(),
 });
 
-export const categorySchema = z.object({
+export const categoryTypeSchema = z.enum(['flowers', 'bouquets', 'crafts', 'other']);
+
+export const categoryBaseSchema = z.object({
   name: z.string().min(1, 'Category name is required'),
   slug: z
     .string()
@@ -101,9 +111,37 @@ export const categorySchema = z.object({
     .regex(/^[a-z0-9-]+$/, 'Slug must be lowercase alphanumeric with hyphens'),
   description: z.string().optional(),
   imageUrl: z.string().url().optional(),
+  imagePublicId: z.string().optional(),
+  type: z.enum(['flowers', 'bouquets', 'crafts', 'other']).default('flowers'),
   parentId: z.string().optional(),
   sortOrder: z.number().int().default(0),
   isActive: z.boolean().default(true),
+});
+
+export const categoryCreateSchema = categoryBaseSchema.extend({
+  // slug is auto-generated from name if not provided
+  slug: z
+    .string()
+    .regex(/^[a-z0-9-]+$/)
+    .optional(),
+});
+
+export const categoryUpdateSchema = categoryBaseSchema.partial().extend({
+  id: z.string().min(1),
+});
+
+export const categoryReorderSchema = z.object({
+  categories: z.array(
+    z.object({
+      id: z.string().min(1),
+      sortOrder: z.number().int(),
+    })
+  ),
+});
+
+export const categoryDeleteSchema = z.object({
+  id: z.string().min(1),
+  reassignProductIds: z.array(z.string()).optional(), // Products to reassign before delete
 });
 
 export const reviewSchema = z.object({
@@ -168,4 +206,28 @@ export const shippingZoneSchema = z.object({
   perKmRate: priceSchema.optional(),
   freeShippingThreshold: priceSchema.optional(),
   estimatedDays: z.number().int().positive(),
+});
+
+// Search and filter schemas
+export const productFilterSchema = z.object({
+  categoryId: z.string().optional(),
+  categorySlug: z.string().optional(),
+  type: z.enum(['made_to_order', 'tracked_inventory']).optional(),
+  status: z.enum(['draft', 'published', 'archived']).optional(),
+  minPrice: priceSchema.optional(),
+  maxPrice: priceSchema.optional(),
+  tags: z.array(z.string()).optional(),
+  isFeatured: z.boolean().optional(),
+  search: z.string().optional(),
+});
+
+export const categoryFilterSchema = z.object({
+  type: z.enum(['flowers', 'bouquets', 'crafts', 'other']).optional(),
+  isActive: z.boolean().optional(),
+  parentId: z.string().optional(),
+});
+
+export const productSortSchema = z.object({
+  sortBy: z.enum(['name', 'basePrice', 'salePrice', 'createdAt', 'sortOrder', 'isFeatured']).default('sortOrder'),
+  sortOrder: z.enum(['asc', 'desc']).default('asc'),
 });

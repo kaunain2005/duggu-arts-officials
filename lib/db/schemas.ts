@@ -101,6 +101,7 @@ export const categorySchema = z.object({
   description: z.string().optional(),
   imageUrl: z.string().url().optional(),
   imagePublicId: z.string().optional(),
+  type: z.enum(['flowers', 'bouquets', 'crafts', 'other']).default('flowers'),
   parentId: z.string().optional(),
   sortOrder: z.number().int().default(0),
   isActive: z.boolean().default(true),
@@ -349,12 +350,20 @@ export const wishlistItemSchema = z.object({
   addedAt: timestampSchema,
 });
 
+export const slugRegistrySchema = z.object({
+  slug: z.string().min(1),
+  type: z.enum(['category', 'product']),
+  resourceId: z.string().min(1),
+  createdAt: timestampSchema,
+});
+
 export const collections = {
   users: "users",
   products: "products",
   variants: "variants",
   images: "images",
   categories: "categories",
+  slugRegistry: "slugRegistry", // For enforcing unique slugs
   orders: "orders",
   orderItems: "orderItems",
   orderStatusHistory: "orderStatusHistory",
@@ -389,6 +398,7 @@ export type ShippingZone = z.infer<typeof shippingZoneSchema>;
 export type ShippingSettings = z.infer<typeof shippingSettingsSchema>;
 export type CartItem = z.infer<typeof cartItemSchema>;
 export type WishlistItem = z.infer<typeof wishlistItemSchema>;
+export type SlugRegistry = z.infer<typeof slugRegistrySchema>;
 
 // Inventory document ID format: `${productId}_${variantId}`
 export function getInventoryDocId(productId: string, variantId: string): string {

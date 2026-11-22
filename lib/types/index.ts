@@ -24,6 +24,8 @@ export type CustomRequestStatus =
   | 'completed'
   | 'cancelled';
 
+export type CategoryType = 'flowers' | 'bouquets' | 'crafts' | 'other';
+
 export interface UserProfile {
   uid: string;
   email: string;
@@ -119,6 +121,7 @@ export interface Category {
   description?: string;
   imageUrl?: string;
   imagePublicId?: string;
+  type: CategoryType;
   parentId?: string;
   sortOrder: number;
   isActive: boolean;
