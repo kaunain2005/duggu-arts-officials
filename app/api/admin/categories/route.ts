@@ -6,6 +6,7 @@ import { collections } from "@/lib/db/schemas";
 import { categoryCreateSchema, categoryFilterSchema, cursorPaginationSchema } from "@/lib/validation/schemas";
 import { Query } from "firebase-admin/firestore";
 import { z } from "zod";
+import { Category } from "@/lib/types";
 
 export async function GET(request: NextRequest) {
   try {
@@ -65,12 +66,18 @@ export async function POST(request: NextRequest) {
 
     const { createCategoryWithSlug } = await import("@/lib/db/firestore");
 
-    // Ensure required fields are present
+    // Ensure all required fields are present with defaults
     const categoryData = {
-      ...data,
-      productCount: data.productCount ?? 0,
-      type: data.type ?? "flowers",
+      name: data.name,
       slug: data.slug, // slug is optional - server will generate if not provided
+      description: data.description,
+      imageUrl: data.imageUrl,
+      imagePublicId: data.imagePublicId,
+      type: data.type ?? "flowers",
+      parentId: data.parentId,
+      sortOrder: data.sortOrder ?? 0,
+      isActive: data.isActive ?? true,
+      productCount: 0,
     };
 
     const categoryId = await createCategoryWithSlug(categoryData as Omit<Category, "id" | "createdAt" | "updatedAt"> & { slug?: string });

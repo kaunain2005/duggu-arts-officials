@@ -14,8 +14,10 @@ import {
   Transaction,
 } from "firebase-admin/firestore";
 import { collections, type CollectionName } from "./schemas";
-import { Category, CategoryType } from "@/lib/types";
+import { Category, CategoryType, Product, ProductVariant, ProductImage } from "@/lib/types";
 import { generateSlugFromName } from "@/lib/cloudinary/folders";
+import { getProductFolderPath, getVariantFolderPath } from "@/lib/cloudinary/folders";
+import { getCloudinary } from "@/lib/cloudinary/server";
 
 export const adminDb = getAdminDb();
 
@@ -322,88 +324,10 @@ export function getCategoryForCloudinary(category: Category): Pick<Category, 'ty
 }
 
 /**
- * Query active categories with optional type filter.
+ * ============================================================================
+ * CATEGORY FUNCTIONS
+ * ============================================================================
  */
-export async function queryActiveCategories(filters?: {
-  type?: string;
-  parentId?: string;
-  limit?: number;
-}): Promise<Category[]> {
-  let query: Query = adminDb.collection(collections.categories);
-  
-  query = query.where('isActive', '==', true);
-  
-  if (filters?.type) {
-    query = query.where('type', '==', filters.type);
-  }
-  
-  if (filters?.parentId) {
-    query = query.where('parentId', '==', filters.parentId);
-  }
-  
-  query = query.orderBy('sortOrder', 'asc').orderBy('name', 'asc');
-  
-  if (filters?.limit) {
-    query = query.limit(filters.limit);
-  }
-  
-  const snap = await query.get();
-  return snap.docs.map(doc => getDocData(doc)).filter((d): d is Category => d !== null);
-}
-
-/**
- * Get category by slug.
- */
-export async function getCategoryBySlug(slug: string): Promise<Category | null> {
-  const snap = await adminDb
-    .collection(collections.categories)
-    .where('slug', '==', slug)
-    .limit(1)
-    .get();
-  
-  if (snap.empty) return null;
-  const doc = snap.docs[0];
-  const data = getDocData<Category>(doc);
-  if (!data) return null;
-  return data;
-}
-
-/**
- * Get category by ID with all sub-collections.
- */
-export async function getCategoryWithDetails(categoryId: string) {
-  const catDoc = await adminDb.collection(collections.categories).doc(categoryId).get();
-  if (!catDoc.exists) return null;
-  
-  const category = getDocData<Category>(catDoc);
-  if (!category) return null;
-  
-  // Get subcategories
-  const subCatsSnap = await adminDb
-    .collection('categories')
-    .where('parentId', '==', categoryId)
-    .where('isActive', '==', true)
-    .orderBy('sortOrder', 'asc')
-    .get();
-  
-  const subcategories = subCatsSnap.docs
-    .map(doc => getDocData<Category>(doc))
-    .filter((d): d is Category => d !== null);
-  
-  // Get product count (denormalized or real-time)
-  const productsSnap = await adminDb
-    .collection('products')
-    .where('categoryId', '==', catDoc.id)
-    .where('status', '==', 'published')
-    .count()
-    .get();
-  
-  return {
-    ...category,
-    subcategories,
-    productCount: productsSnap.data().count,
-  };
-}
 
 /**
  * Create a new category with slug reservation.
@@ -414,25 +338,34 @@ export async function createCategoryWithSlug(
 ): Promise<string> {
   // Generate slug from name if not provided
   const baseSlug = data.slug || generateSlugFromName(data.name);
-  
+
   // Generate unique slug
   const uniqueSlug = await generateUniqueSlugFirestore(baseSlug, 'category');
-  
-  const categoryData: Category = {
-    ...data,
-    slug: uniqueSlug,
-    createdAt: Timestamp.now(),
-    updatedAt: Timestamp.now(),
-  } as Category;
-  
+
   const docRef = adminDb.collection(collections.categories).doc();
   
+  const categoryData: Category = {
+    id: docRef.id,
+    slug: uniqueSlug,
+    name: data.name,
+    description: data.description,
+    imageUrl: data.imageUrl,
+    imagePublicId: data.imagePublicId,
+    type: data.type || 'flowers',
+    parentId: data.parentId,
+    sortOrder: data.sortOrder ?? 0,
+    isActive: data.isActive ?? true,
+    productCount: 0,
+    createdAt: Timestamp.now(),
+    updatedAt: Timestamp.now(),
+  };
+
   // Reserve slug in registry
   await reserveSlug(uniqueSlug, 'category', docRef.id);
-  
+
   // Create category document
   await adminDb.collection(collections.categories).doc(docRef.id).set(categoryData);
-  
+
   return docRef.id;
 }
 
@@ -447,26 +380,26 @@ export async function updateCategoryWithSlug(
 ): Promise<void> {
   const catRef = adminDb.collection(collections.categories).doc(categoryId);
   const catSnap = await catRef.get();
-  
+
   if (!catSnap.exists) {
     throw new Error('Category not found');
   }
-  
+
   const oldSlug = catSnap.data()?.slug;
-  
+
   if (newSlug && newSlug !== oldSlug) {
     // Check if new slug is available
     const available = await isSlugAvailable(newSlug);
     if (!available) {
       throw new Error(`Slug "${newSlug}" is already in use`);
     }
-    
+
     // Reserve new slug
     await reserveSlug(newSlug, 'category', categoryId);
     // Release old slug
     await releaseSlug(oldSlug);
   }
-  
+
   await adminDb.collection(collections.categories).doc(categoryId).update({
     ...data,
     ...(newSlug && { slug: newSlug }),
@@ -485,53 +418,724 @@ export async function deleteCategoryWithProtection(
   return adminDb.runTransaction(async (transaction) => {
     const catRef = adminDb.collection(collections.categories).doc(categoryId);
     const catSnap = await transaction.get(catRef);
-    
+
     if (!catSnap.exists) {
       return { success: false, error: 'Category not found' };
     }
-    
+
     // Check for subcategories
     const subCatsSnap = await adminDb
       .collection('categories')
       .where('parentId', '==', categoryId)
       .limit(1)
       .get();
-    
+
     if (!subCatsSnap.empty) {
       return { success: false, error: 'Cannot delete category with subcategories. Delete or reassign subcategories first.' };
     }
-    
+
     // Check for products in this category
     const productsSnap = await adminDb
       .collection('products')
       .where('categoryId', '==', categoryId)
       .limit(1)
       .get();
-    
+
     if (!productsSnap.empty) {
       if (reassignProductIds.length === 0) {
         return { success: false, error: 'Cannot delete category with assigned products. Reassign or delete products first.' };
       }
-      
+
       // Reassign specified products using the transaction
       for (const productId of reassignProductIds) {
         const prodRef = adminDb.collection('products').doc(productId);
         transaction.update(prodRef, {
           categoryId: null,
-          updatedAt: FieldValue.serverTimestamp(),
+          updatedAt: Timestamp.now(),
         });
       }
     }
-    
+
     // Release slug from registry
     const catData = catSnap.data();
     if (catData?.slug) {
       await releaseSlug(catData.slug);
     }
-    
+
     // Delete category
-    transaction.delete(adminDb.collection(collections.categories).doc(categoryId));
-    
+    transaction.delete(adminDb.collection('categories').doc(categoryId));
+
     return { success: true };
   });
+}
+
+/**
+ * ============================================================================
+ * PRODUCT FUNCTIONS
+ * ============================================================================
+ */
+
+/**
+ * Reserve a product slug in the slug registry.
+ */
+export async function reserveProductSlug(
+  slug: string,
+  resourceId: string
+): Promise<boolean> {
+  return reserveSlug(slug, 'product', resourceId);
+}
+
+/**
+ * Generate a unique product slug.
+ */
+export async function generateUniqueProductSlug(baseSlug: string): Promise<string> {
+  return generateUniqueSlugFirestore(baseSlug, 'product');
+}
+
+/**
+ * Release a product slug from the registry.
+ */
+export async function releaseProductSlug(slug: string): Promise<void> {
+  await releaseSlug(slug);
+}
+
+/**
+ * Get product by slug.
+ */
+export async function getProductBySlug(slug: string) {
+  const snap = await adminDb
+    .collection(collections.products)
+    .where('slug', '==', slug)
+    .limit(1)
+    .get();
+
+  if (snap.empty) return null;
+  const doc = snap.docs[0];
+  return getDocData(doc);
+}
+
+/**
+ * Get product by ID with all sub-collections.
+ */
+export async function getProductWithDetails(productId: string) {
+  const productDoc = await adminDb.collection(collections.products).doc(productId).get();
+  if (!productDoc.exists) return null;
+
+  const product = getDocData(productDoc);
+  if (!product) return null;
+
+  // Get variants
+  const variantsSnap = await adminDb
+    .collection(collections.products)
+    .doc(productId)
+    .collection(collections.variants)
+    .where('isActive', '==', true)
+    .orderBy('sortOrder', 'asc')
+    .get();
+
+  const variants = variantsSnap.docs
+    .map(doc => getDocData(doc))
+    .filter((d): d is ProductVariant => d !== null);
+
+  // Get images
+  const imagesSnap = await adminDb
+    .collection(collections.products)
+    .doc(productId)
+    .collection(collections.images)
+    .orderBy('sortOrder', 'asc')
+    .get();
+
+  const images = imagesSnap.docs
+    .map(doc => getDocData(doc))
+    .filter((d): d is ProductImage => d !== null);
+
+  return {
+    ...product,
+    variants,
+    images,
+  };
+}
+
+/**
+ * Query products with cursor-based pagination and filters.
+ */
+export async function queryProductsWithCursor(
+  limit: number,
+  filters: {
+    categoryId?: string;
+    type?: string;
+    status?: string;
+    isFeatured?: boolean;
+    minPrice?: number;
+    maxPrice?: number;
+    search?: string;
+  } = {},
+  orderByField: string = 'sortOrder',
+  orderDirection: 'asc' | 'desc' = 'asc',
+  cursor?: string
+) {
+  let query: Query = adminDb.collection(collections.products);
+
+  if (filters.categoryId) {
+    query = query.where('categoryId', '==', filters.categoryId);
+  }
+  if (filters.type) {
+    query = query.where('type', '==', filters.type);
+  }
+  if (filters.status) {
+    query = query.where('status', '==', filters.status);
+  }
+  if (filters.isFeatured !== undefined) {
+    query = query.where('isFeatured', '==', filters.isFeatured);
+  }
+  if (filters.minPrice !== undefined) {
+    query = query.where('basePrice', '>=', filters.minPrice);
+  }
+  if (filters.maxPrice !== undefined) {
+    query = query.where('basePrice', '<=', filters.maxPrice);
+  }
+  // Note: Full-text search would require a different approach (Algolia, etc.)
+
+  query = query.orderBy('sortOrder', 'asc').orderBy('createdAt', 'desc').limit(limit + 1);
+
+  if (cursor) {
+    const cursorDoc = await adminDb.collection('products').doc(cursor).get();
+    if (cursorDoc.exists) {
+      query = query.startAfter(cursorDoc);
+    }
+  }
+
+  const snap = await query.get();
+  const docs = snap.docs;
+  const hasMore = docs.length > limit;
+  const items = hasMore ? docs.slice(0, limit) : docs;
+  const nextCursor = hasMore ? items[items.length - 1].id : null;
+
+  return {
+    data: docs.map(doc => getDocData(doc)).filter((d): d is any => d !== null),
+    nextCursor,
+    hasMore,
+  };
+}
+
+/**
+ * Get product by ID.
+ */
+export async function getProductById(productId: string) {
+  const doc = await adminDb.collection(collections.products).doc(productId).get();
+  return getDocData(doc);
+}
+
+/**
+ * Create a new product with slug reservation.
+ * Uses transaction to ensure slug uniqueness.
+ */
+export async function createProductWithSlug(
+  data: Omit<any, 'id' | 'createdAt' | 'updatedAt'> & { slug?: string }
+): Promise<string> {
+  // Generate slug from name if not provided
+  const baseSlug = data.slug || generateSlugFromName(data.name);
+
+  // Generate unique slug
+  const uniqueSlug = await generateUniqueSlugFirestore(baseSlug, 'product');
+
+  const productData = {
+    ...data,
+    slug: uniqueSlug,
+    createdAt: Timestamp.now(),
+    updatedAt: Timestamp.now(),
+  };
+
+  const docRef = adminDb.collection(collections.products).doc();
+
+  // Reserve slug in registry
+  await reserveSlug(uniqueSlug, 'product', docRef.id);
+
+  // Create product document
+  await adminDb.collection(collections.products).doc(docRef.id).set(productData);
+
+  return docRef.id;
+}
+
+/**
+ * Update product with slug change handling.
+ * If slug changes, reserve new slug and release old one.
+ */
+export async function updateProductWithSlug(
+  productId: string,
+  data: Partial<any>,
+  newSlug?: string
+): Promise<void> {
+  const productRef = adminDb.collection(collections.products).doc(productId);
+  const productSnap = await productRef.get();
+
+  if (!productSnap.exists) {
+    throw new Error('Product not found');
+  }
+
+  const oldSlug = productSnap.data()?.slug;
+
+  if (newSlug && newSlug !== oldSlug) {
+    // Check if new slug is available
+    const available = await isSlugAvailable(newSlug);
+    if (!available) {
+      throw new Error(`Slug "${newSlug}" is already in use`);
+    }
+
+    // Reserve new slug
+    await reserveSlug(newSlug, 'product', productId);
+    // Release old slug
+    await releaseSlug(oldSlug);
+  }
+
+  await adminDb.collection(collections.products).doc(productId).update({
+    ...data,
+    ...(newSlug && { slug: newSlug }),
+    updatedAt: Timestamp.now(),
+  });
+}
+
+/**
+ * Delete product with protection.
+ * Cleans up associated images from Cloudinary and Firestore.
+ * Cloudinary operations are performed OUTSIDE the transaction to avoid
+ * blocking the transaction and to handle failures gracefully.
+ */
+export async function deleteProductWithProtection(
+  productId: string
+): Promise<{ success: boolean; error?: string }> {
+  // First, collect all public IDs to delete from Cloudinary
+  // This is done OUTSIDE the transaction to avoid blocking the transaction
+  // and to handle Cloudinary failures gracefully
+  const productRef = adminDb.collection(collections.products).doc(productId);
+  const productSnap = await adminDb.collection(collections.products).doc(productId).get();
+
+  if (!productSnap.exists) {
+    return { success: false, error: 'Product not found' };
+  }
+
+  const productData = productSnap.data();
+  if (!productData) {
+    return { success: false, error: 'Product data not found' };
+  }
+
+  // Collect all public IDs to delete from Cloudinary
+  const publicIdsToDelete: string[] = [];
+
+  // Product images
+  if (productData?.images && productData.images.length > 0) {
+    const productPublicIds = productData.images
+      .filter((img: any) => img.publicId)
+      .map((img: any) => img.publicId);
+    publicIdsToDelete.push(...productPublicIds);
+  }
+
+  // Get variant images
+  const variantsSnap = await adminDb
+    .collection(collections.products)
+    .doc(productId)
+    .collection(collections.variants)
+    .get();
+
+  for (const variantDoc of variantsSnap.docs) {
+    const variantData = variantDoc.data();
+    if (variantData?.images && variantData.images.length > 0) {
+      const variantPublicIds = variantData.images
+        .filter((img: any) => img.publicId)
+        .map((img: any) => img.publicId);
+      publicIdsToDelete.push(...variantPublicIds);
+    }
+  }
+
+  // Get product images from subcollection
+  const imagesSnap = await adminDb
+    .collection(collections.products)
+    .doc(productId)
+    .collection(collections.images)
+    .get();
+
+  for (const imageDoc of imagesSnap.docs) {
+    const imageData = imageDoc.data();
+    if (imageData?.publicId) {
+      publicIdsToDelete.push(imageData.publicId);
+    }
+  }
+
+  // Now run the Firestore transaction to delete all documents
+  try {
+    await adminDb.runTransaction(async (transaction) => {
+      const productRef = adminDb.collection(collections.products).doc(productId);
+      const productSnap = await transaction.get(adminDb.collection(collections.products).doc(productId));
+
+      if (!productSnap.exists) {
+        throw new Error('Product not found');
+      }
+
+      const productData = productSnap.data();
+      if (!productData) {
+        throw new Error('Product data not found');
+      }
+
+      // Delete variant subcollection
+      const variantsSnap = await adminDb
+        .collection(collections.products)
+        .doc(productId)
+        .collection(collections.variants)
+        .get();
+
+      for (const variantDoc of variantsSnap.docs) {
+        transaction.delete(variantDoc.ref);
+      }
+
+      // Delete product images subcollection
+      const imagesSnap = await adminDb
+        .collection(collections.products)
+        .doc(productId)
+        .collection(collections.images)
+        .get();
+
+      for (const imageDoc of imagesSnap.docs) {
+        transaction.delete(imageDoc.ref);
+      }
+
+      // Release slug from registry
+      if (productSnap.data()?.slug) {
+        await releaseSlug(productSnap.data()!.slug);
+      }
+
+      // Delete product document
+      transaction.delete(adminDb.collection(collections.products).doc(productId));
+    });
+
+    // Delete Cloudinary images AFTER successful transaction
+    // This is done outside the transaction to avoid blocking and handle failures gracefully
+    if (publicIdsToDelete.length > 0) {
+      try {
+        const cloudinary = await getCloudinary();
+        await cloudinary.api.delete_resources(publicIdsToDelete);
+      } catch (cloudinaryError) {
+        // Log error but don't fail the product deletion
+        console.error('Failed to delete Cloudinary images:', cloudinaryError);
+        // Could optionally store failed deletions for retry later
+      }
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error('Failed to delete product:', error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Failed to delete product' 
+    };
+  }
+}
+
+/**
+ * Create a product variant.
+ */
+export async function createProductVariant(
+  productId: string,
+  variantData: Omit<any, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+): Promise<string> {
+  const variantRef = adminDb
+    .collection(collections.products)
+    .doc(productId)
+    .collection(collections.variants)
+    .doc();
+
+  const variantId = variantData.id || variantRef.id;
+  const now = Timestamp.now();
+
+  await variantRef.set({
+    ...variantData,
+    id: variantId,
+    productId,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  return variantId;
+}
+
+/**
+ * Update a product variant.
+ */
+export async function updateProductVariant(
+  productId: string,
+  variantId: string,
+  data: Partial<any>
+): Promise<void> {
+  await adminDb
+    .collection(collections.products)
+    .doc(productId)
+    .collection(collections.variants)
+    .doc(variantId)
+    .update({
+      ...data,
+      updatedAt: Timestamp.now(),
+    });
+}
+
+/**
+ * Delete a product variant.
+ */
+export async function deleteProductVariant(
+  productId: string,
+  variantId: string
+): Promise<void> {
+  const variantRef = adminDb
+    .collection(collections.products)
+    .doc(productId)
+    .collection(collections.variants)
+    .doc(variantId);
+
+  const variantSnap = await variantRef.get();
+  if (!variantSnap.exists) {
+    throw new Error('Variant not found');
+  }
+
+  const variantData = variantSnap.data();
+
+  // Delete variant images from Cloudinary
+  if (variantData?.images && variantData.images.length > 0) {
+    const cloudinary = await getCloudinary();
+    const publicIds = variantData.images
+      .filter((img: any) => img.publicId)
+      .map((img: any) => img.publicId);
+
+    if (publicIds.length > 0) {
+      await cloudinary.api.delete_resources(publicIds);
+    }
+  }
+
+  await variantRef.delete();
+}
+
+/**
+ * Add product image metadata to Firestore.
+ */
+export async function addProductImage(
+  productId: string,
+  imageData: Omit<any, 'id' | 'createdAt'>
+): Promise<string> {
+  const imageRef = adminDb
+    .collection(collections.products)
+    .doc(productId)
+    .collection(collections.images)
+    .doc();
+
+  const imageId = imageData.id || imageRef.id;
+  const now = Timestamp.now();
+
+  await imageRef.set({
+    ...imageData,
+    id: imageId,
+    createdAt: now,
+  });
+
+  return imageId;
+}
+
+/**
+ * Delete product image from Firestore and Cloudinary.
+ */
+export async function deleteProductImage(
+  productId: string,
+  imageId: string
+): Promise<void> {
+  const imageRef = adminDb
+    .collection(collections.products)
+    .doc(productId)
+    .collection(collections.images)
+    .doc(imageId);
+
+  const imageSnap = await imageRef.get();
+  if (!imageSnap.exists) {
+    throw new Error('Image not found');
+  }
+
+  const imageData = imageSnap.data();
+
+  // Delete from Cloudinary
+  if (imageData?.publicId) {
+    const cloudinary = await getCloudinary();
+    await cloudinary.uploader.destroy(imageData.publicId);
+  }
+
+  await adminDb
+    .collection(collections.products)
+    .doc(productId)
+    .collection(collections.images)
+    .doc(imageId)
+    .delete();
+}
+
+/**
+ * Set primary image for a product.
+ */
+export async function setPrimaryProductImage(
+  productId: string,
+  imageId: string
+): Promise<void> {
+  const batch = adminDb.batch();
+
+  // Unset current primary
+  const currentPrimarySnap = await adminDb
+    .collection(collections.products)
+    .doc(productId)
+    .collection(collections.images)
+    .where('isPrimary', '==', true)
+    .limit(1)
+    .get();
+
+  if (!currentPrimarySnap.empty) {
+    batch.update(currentPrimarySnap.docs[0].ref, { isPrimary: false });
+  }
+
+  // Set new primary
+  const imageRef = adminDb
+    .collection(collections.products)
+    .doc(productId)
+    .collection(collections.images)
+    .doc(imageId);
+
+  batch.update(imageRef, { isPrimary: true });
+
+  // Also update product document's primary image reference if needed
+  batch.update(adminDb.collection(collections.products).doc(productId), {
+    updatedAt: Timestamp.now(),
+  });
+
+  await batch.commit();
+}
+
+/**
+ * Update product variant stock (for inventory management).
+ */
+export async function updateVariantStock(
+  productId: string,
+  variantId: string,
+  quantityChange: number
+): Promise<void> {
+  const variantRef = adminDb
+    .collection(collections.products)
+    .doc(productId)
+    .collection(collections.variants)
+    .doc(variantId);
+
+  await adminDb.runTransaction(async (transaction) => {
+    const variantSnap = await transaction.get(variantRef);
+    if (!variantSnap.exists) {
+      throw new Error('Variant not found');
+    }
+
+    const currentStock = variantSnap.data()?.stock || 0;
+    const newStock = currentStock + quantityChange;
+
+    if (newStock < 0) {
+      throw new Error('Insufficient stock');
+    }
+
+    transaction.update(variantRef, {
+      stock: newStock,
+      updatedAt: Timestamp.now(),
+    });
+  });
+}
+
+/**
+ * Reserve stock for an order (transaction-safe).
+ */
+export async function reserveStockForOrder(
+  items: Array<{ productId: string; variantId: string; quantity: number }>
+): Promise<void> {
+  await adminDb.runTransaction(async (transaction) => {
+    for (const item of items) {
+      const variantRef = adminDb
+        .collection(collections.products)
+        .doc(item.productId)
+        .collection(collections.variants)
+        .doc(item.variantId);
+
+      const variantSnap = await transaction.get(variantRef);
+      if (!variantSnap.exists) {
+        throw new Error(`Variant ${item.variantId} not found`);
+      }
+
+      const currentStock = variantSnap.data()?.stock || 0;
+      const reservedStock = variantSnap.data()?.reservedStock || 0;
+
+      if (currentStock - reservedStock < item.quantity) {
+        throw new Error(`Insufficient stock for variant ${item.variantId}`);
+      }
+
+      transaction.update(variantRef, {
+        reservedStock: reservedStock + item.quantity,
+        updatedAt: Timestamp.now(),
+      });
+    }
+  });
+}
+
+/**
+ * Release reserved stock (e.g., order cancellation).
+ */
+export async function releaseReservedStock(
+  items: Array<{ productId: string; variantId: string; quantity: number }>
+): Promise<void> {
+  await adminDb.runTransaction(async (transaction) => {
+    for (const item of items) {
+      const variantRef = adminDb
+        .collection(collections.products)
+        .doc(item.productId)
+        .collection(collections.variants)
+        .doc(item.variantId);
+
+      const variantSnap = await transaction.get(variantRef);
+      if (!variantSnap.exists) continue;
+
+      const reservedStock = variantSnap.data()?.reservedStock || 0;
+      const newReserved = Math.max(0, reservedStock - item.quantity);
+
+      transaction.update(variantRef, {
+        reservedStock: newReserved,
+        updatedAt: Timestamp.now(),
+      });
+    }
+  });
+}
+
+/**
+ * Confirm reserved stock (order confirmed).
+ */
+export async function confirmReservedStock(
+  items: Array<{ productId: string; variantId: string; quantity: number }>
+): Promise<void> {
+  const transactionHandler = async function(transaction: Transaction) {
+    for (const item of items) {
+      const variantRef = adminDb
+        .collection(collections.products)
+        .doc(item.productId)
+        .collection(collections.variants)
+        .doc(item.variantId);
+
+      const variantSnap = await transaction.get(variantRef);
+      if (!variantSnap.exists) continue;
+
+      const reservedStock = variantSnap.data()?.reservedStock || 0;
+      const stock = variantSnap.data()?.stock || 0;
+
+      if (reservedStock < item.quantity) {
+        throw new Error(`Insufficient reserved stock for variant ${item.variantId}`);
+      }
+
+      transaction.update(variantRef, {
+        stock: stock - item.quantity,
+        reservedStock: reservedStock - item.quantity,
+        updatedAt: Timestamp.now(),
+      });
+    }
+  };
+
+  await adminDb.runTransaction(transactionHandler);
 }

@@ -39,7 +39,13 @@ function buildSkeletonHTML(): string {
   `;
 }
 
-export function CustomerContent({ children }: { children: ReactNode }) {
+export function CustomerContent({
+  children,
+  mobileMenuOpen,
+}: {
+  children: ReactNode;
+  mobileMenuOpen: boolean;
+}) {
   const { user, profile, logout, loading } = useAuth();
 
   // Update the auth-dependent user area in the desktop sidebar
@@ -118,7 +124,7 @@ export function CustomerContent({ children }: { children: ReactNode }) {
       </div>
     `;
     mobileLogoutBtn.classList.remove("hidden");
-  }, [loading, user, profile]);
+  }, [loading, user, profile, mobileMenuOpen]);
 
   // Attach logout handlers
   useEffect(() => {

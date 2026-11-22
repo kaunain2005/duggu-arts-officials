@@ -1,4 +1,4 @@
-//app/(customer)/account/AccountDashboardClientClient.tsx
+//app/(customer)/account/AccountDashboardClient.tsx
 "use client";
 export const instant = false;
 import { useAuth } from "@/hooks/useAuth";

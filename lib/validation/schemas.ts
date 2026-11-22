@@ -227,3 +227,192 @@ export const productSortSchema = z.object({
   sortBy: z.enum(['name', 'basePrice', 'salePrice', 'createdAt', 'sortOrder', 'isFeatured']).default('sortOrder'),
   sortOrder: z.enum(['asc', 'desc']).default('asc'),
 });
+
+// Product image schema
+export const productImageSchema = z.object({
+  publicId: z.string().min(1),
+  secureUrl: z.string().url(),
+  alt: z.string().optional(),
+  isPrimary: z.boolean().default(false),
+  sortOrder: z.number().int().default(0),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+  format: z.string().optional(),
+  bytes: z.number().int().positive().optional(),
+  variantId: z.string().optional(),
+});
+
+// Product variant schemas
+export const productVariantCreateSchema = z.object({
+  name: z.string().min(1, 'Variant name is required'),
+  sku: z.string().optional(),
+  price: priceSchema,
+  salePrice: priceSchema.optional(),
+  stock: z.number().int().nonnegative().default(0),
+  lowStockThreshold: z.number().int().nonnegative().default(5),
+  images: z.array(z.string().url()).default([]),
+  sortOrder: z.number().int().default(0),
+  isActive: z.boolean().default(true),
+  leadTimeDays: z.number().int().positive().optional(),
+});
+
+export const productVariantUpdateSchema = z.object({
+  name: z.string().min(1).optional(),
+  sku: z.string().optional(),
+  price: priceSchema.optional(),
+  salePrice: priceSchema.optional(),
+  stock: z.number().int().nonnegative().optional(),
+  lowStockThreshold: z.number().int().nonnegative().optional(),
+  images: z.array(z.string().url()).optional(),
+  sortOrder: z.number().int().optional(),
+  isActive: z.boolean().optional(),
+  leadTimeDays: z.number().int().positive().optional(),
+});
+
+// Product image metadata schema (for Firestore storage)
+export const productImageMetadataSchema = z.object({
+  id: z.string().min(1),
+  productId: z.string().min(1),
+  variantId: z.string().optional(),
+  publicId: z.string().min(1),
+  secureUrl: z.string().url(),
+  alt: z.string().optional(),
+  isPrimary: z.boolean().default(false),
+  sortOrder: z.number().int().default(0),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+  format: z.string().optional(),
+  bytes: z.number().int().positive().optional(),
+  createdAt: z.any(), // Timestamp
+});
+
+// Product create schema (extends productSchema with required fields for creation)
+export const productCreateSchema = z.object({
+  name: z.string().min(1, 'Product name is required'),
+  slug: z
+    .string()
+    .min(1)
+    .regex(/^[a-z0-9-]+$/, 'Slug must be lowercase alphanumeric with hyphens'),
+  description: z.string().min(1, 'Description is required'),
+  shortDescription: z.string().optional(),
+  categoryId: z.string().min(1, 'Category is required'),
+  type: z.enum(['made_to_order', 'tracked_inventory']).default('made_to_order'),
+  status: z.enum(['draft', 'published', 'archived']).default('draft'),
+  basePrice: priceSchema,
+  salePrice: priceSchema.optional(),
+  sku: z.string().optional(),
+  tags: z.array(z.string()).default([]),
+  isFeatured: z.boolean().default(false),
+  sortOrder: z.number().int().default(0),
+  seoTitle: z.string().optional(),
+  seoDescription: z.string().optional(),
+  variants: z.array(
+    z.object({
+      name: z.string().min(1, 'Variant name is required'),
+      sku: z.string().optional(),
+      price: priceSchema,
+      salePrice: priceSchema.optional(),
+      stock: z.number().int().nonnegative().default(0),
+      lowStockThreshold: z.number().int().nonnegative().default(5),
+      images: z.array(z.string().url()).default([]),
+      sortOrder: z.number().int().default(0),
+      isActive: z.boolean().default(true),
+      leadTimeDays: z.number().int().positive().optional(),
+    })
+  ).default([]),
+  images: z
+    .array(
+      z.object({
+        publicId: z.string().min(1),
+        secureUrl: z.string().url(),
+        alt: z.string().optional(),
+        isPrimary: z.boolean().default(false),
+        sortOrder: z.number().int().default(0),
+        width: z.number().int().positive().optional(),
+        height: z.number().int().positive().optional(),
+        format: z.string().optional(),
+        bytes: z.number().int().positive().optional(),
+        variantId: z.string().optional(),
+      })
+    )
+    .default([]),
+});
+
+export const productUpdateSchema = z.object({
+  name: z.string().min(1).optional(),
+  slug: z.string().min(1).regex(/^[a-z0-9-]+$/).optional(),
+  description: z.string().optional(),
+  shortDescription: z.string().optional(),
+  categoryId: z.string().optional(),
+  type: z.enum(['made_to_order', 'tracked_inventory']).optional(),
+  status: z.enum(['draft', 'published', 'archived']).optional(),
+  basePrice: priceSchema.optional(),
+  salePrice: priceSchema.optional(),
+  sku: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  isFeatured: z.boolean().optional(),
+  sortOrder: z.number().int().optional(),
+  seoTitle: z.string().optional(),
+  seoDescription: z.string().optional(),
+  variants: z
+    .array(
+      z.object({
+        id: z.string().optional(),
+        name: z.string().min(1).optional(),
+        sku: z.string().optional(),
+        price: priceSchema.optional(),
+        salePrice: priceSchema.optional(),
+        stock: z.number().int().nonnegative().optional(),
+        lowStockThreshold: z.number().int().nonnegative().optional(),
+        images: z.array(z.string().url()).optional(),
+        sortOrder: z.number().int().optional(),
+        isActive: z.boolean().optional(),
+        leadTimeDays: z.number().int().positive().optional(),
+      })
+    )
+    .optional(),
+  images: z
+    .array(
+      z.object({
+        id: z.string().optional(),
+        publicId: z.string().min(1),
+        secureUrl: z.string().url(),
+        alt: z.string().optional(),
+        isPrimary: z.boolean().optional(),
+        sortOrder: z.number().int().optional(),
+        width: z.number().int().positive().optional(),
+        height: z.number().int().positive().optional(),
+        format: z.string().optional(),
+        bytes: z.number().int().positive().optional(),
+        variantId: z.string().optional(),
+      })
+    )
+    .optional(),
+  newSlug: z.string().regex(/^[a-z0-9-]+$/).optional(),
+});
+
+// Signed upload schema
+export const signedUploadSchema = z.object({
+  folder: z.string().min(1),
+  resourceType: z.enum(['image', 'video', 'raw']).default('image'),
+  maxFileSize: z.number().int().positive().max(100 * 1024 * 1024).default(10 * 1024 * 1024),
+  allowedFormats: z.array(z.string()).default(['jpg', 'jpeg', 'png', 'webp', 'avif']),
+  transformation: z
+    .object({
+      width: z.number().int().positive().max(4000).optional(),
+      height: z.number().int().positive().max(4000).optional(),
+      quality: z.union([z.string(), z.number()]).default('auto'),
+      fetchFormat: z.string().default('auto'),
+    })
+    .optional(),
+});
+
+// Cursor-based pagination for products
+export const productCursorPaginationSchema = z.object({
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(100).default(20),
+  sortBy: z
+    .enum(['name', 'basePrice', 'salePrice', 'createdAt', 'sortOrder', 'isFeatured'])
+    .default('sortOrder'),
+  sortOrder: z.enum(['asc', 'desc']).default('desc'),
+});

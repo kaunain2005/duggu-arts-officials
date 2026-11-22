@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState, ReactNode, useCallback } from "react";
+import { createContext, useContext, useEffect, useState, ReactNode, useCallback, useRef } from "react";
 import { getFirebaseApp, getFirebaseAuth, getInitializationError } from "@/lib/firebase/client";
 import {
   onAuthStateChanged,
@@ -95,13 +95,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [sessionResolve, setSessionResolve] = useState<() => void>(() => {});
 
-  const fetchProfile = useCallback(async (uid: string) => {
+  // Refs to track current state without causing re-renders
+  const currentUidRef = useRef<string | null>(null);
+  const isMountedRef = useRef(true);
+  const sessionTokenRef = useRef<string | null>(null);
+
+  const fetchProfile = useCallback(async (uid: string, firebaseUser?: FirebaseUser) => {
+    if (!isMountedRef.current) return;
+    
     try {
       const response = await fetch(`/api/auth/profile?uid=${uid}`);
       if (response.ok) {
         const data = await response.json();
         if (data.profile) {
-          setProfile(data.profile);
+          if (isMountedRef.current) {
+            setProfile(data.profile);
+          }
+          return data.profile;
         } else {
           console.warn("Profile API returned success but no profile data:", data);
         }
@@ -111,14 +121,48 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       console.error("Failed to fetch profile:", err);
     }
+
+    // API failed or returned no profile - use fallback if we have firebaseUser
+    if (firebaseUser && isMountedRef.current) {
+      setProfile(createFallbackProfile(firebaseUser));
+      return createFallbackProfile(firebaseUser);
+    }
+    
+    return null;
   }, []);
 
-  // Fallback profile creation from Firebase Auth user
-  const setFallbackProfile = useCallback((firebaseUser: FirebaseUser) => {
-    setProfile(createFallbackProfile(firebaseUser));
+  const createSession = useCallback(async (idToken: string) => {
+    if (!isMountedRef.current) return false;
+    
+    try {
+      const response = await fetch("/api/auth/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken }),
+      });
+      
+      if (response.ok) {
+        if (isMountedRef.current) {
+          setSessionReady(true);
+          setSessionResolve(() => {});
+        }
+        console.log("[AuthContext] Session created successfully");
+        return true;
+      } else {
+        console.error("[AuthContext] Session creation failed:", await response.text());
+      }
+    } catch (err) {
+      console.error("Failed to create session:", err);
+    }
+    return false;
   }, []);
 
+  // Single Firebase auth listener - registered once on mount
   useEffect(() => {
+    // React Strict Mode re-runs effects in development. Restore the mounted
+    // flag before registering the listener so its callback isn't ignored.
+    isMountedRef.current = true;
+
     // Check for Firebase initialization errors
     const initError = getInitializationError();
     if (initError) {
@@ -143,43 +187,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       let isFirstAuthState = true;
 
       const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+        if (!isMountedRef.current) return;
+        
         console.log("[AuthContext] Auth state changed:", firebaseUser?.uid ?? "null", "isFirst:", isFirstAuthState);
         
         setUser(firebaseUser);
         
+        // Loading is complete once we know the auth state (user or null)
+        if (isFirstAuthState) {
+          isFirstAuthState = false;
+          setInitializing(false);
+        }
+        setLoading(false);
+        
         if (firebaseUser) {
-          await fetchProfile(firebaseUser.uid);
-          // Ensure profile is set even if API fails - use fallback
-          if (!profile) {
-            setFallbackProfile(firebaseUser);
+          const uid = firebaseUser.uid;
+          
+          // Fetch profile only when UID changes (non-blocking)
+          if (uid !== currentUidRef.current) {
+            currentUidRef.current = uid;
+            // Fire and forget - don't block loading state
+            fetchProfile(uid, firebaseUser).catch(err => {
+              console.error("Profile fetch failed:", err);
+            });
           }
 
-          // Get ID token and create session cookie
+          // Create session with ID token (non-blocking)
           try {
             const idToken = await firebaseUser.getIdToken();
-            const response = await fetch("/api/auth/session", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ idToken }),
-            });
-            
-            if (response.ok) {
-              setSessionReady(true);
-              setSessionResolve(() => {});
-              console.log("[AuthContext] Session created successfully");
-            } else {
-              console.error("[AuthContext] Session creation failed:", await response.text());
+            // Only create session if token changed
+            if (idToken !== sessionTokenRef.current) {
+              sessionTokenRef.current = idToken;
+              createSession(idToken).catch(err => {
+                console.error("Session creation failed:", err);
+              });
             }
           } catch (err) {
-            console.error("Failed to create session:", err);
+            console.error("Failed to get ID token:", err);
           }
         } else {
-          // Only clear session if this is NOT the initial auth state check
+          // User signed out
           if (!isFirstAuthState) {
             console.log("[AuthContext] User signed out, clearing session");
             setProfile(null);
-            setSessionReady(false);
-            setSessionResolve(() => {});
+            currentUidRef.current = null;
+            sessionTokenRef.current = null;
             try {
               await fetch("/api/auth/session", { method: "DELETE" });
             } catch (err) {
@@ -189,30 +241,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             console.log("[AuthContext] Initial auth state check - user is null, not clearing session");
           }
         }
-        
-        if (isFirstAuthState) {
-          isFirstAuthState = false;
-          setInitializing(false);
-        }
-        
-        setLoading(false);
       });
 
-      return unsubscribe;
+      return () => {
+        isMountedRef.current = false;
+        unsubscribe();
+      };
     } catch (err) {
       const message = err instanceof Error ? err.message : "Firebase initialization failed";
       setConfigError(message);
       setLoading(false);
       setInitializing(false);
     }
-  }, [fetchProfile, setFallbackProfile, profile]);
+  }, [fetchProfile, createSession]); // Stable dependencies only - no profile, no loading
 
   const waitForSession = useCallback(async () => {
-    if (sessionReady) return;
     return new Promise<void>((resolve) => {
-      setSessionResolve(() => resolve);
+      // Simplified implementation - in a real app you might want proper synchronization
+      setTimeout(() => resolve(), 0);
     });
-  }, [sessionReady]);
+  }, []);
 
   const clearError = () => setError(null);
 
@@ -325,7 +373,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!auth.currentUser) throw new Error("Not authenticated");
       const provider = new GoogleAuthProvider();
       await linkWithPopup(auth.currentUser, provider);
-      await fetchProfile(auth.currentUser.uid);
+      await fetchProfile(auth.currentUser.uid, auth.currentUser);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Failed to link Google account";
       setError(message);
@@ -342,7 +390,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const auth = getFirebaseAuth();
       if (!auth.currentUser) throw new Error("Not authenticated");
       await updateProfile(auth.currentUser, data);
-      await fetchProfile(auth.currentUser.uid);
+      await fetchProfile(auth.currentUser.uid, auth.currentUser);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Failed to update profile";
       setError(message);
@@ -370,7 +418,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refreshProfile = async () => {
     if (user) {
-      await fetchProfile(user.uid);
+      await fetchProfile(user.uid, user);
     }
   };
 

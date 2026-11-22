@@ -1,3 +1,4 @@
+// src/app/(customer)/layout.tsx
 "use client";
 
 import { ReactNode } from "react";
@@ -164,7 +165,7 @@ export default function CustomerLayout({ children }: { children: ReactNode }) {
       <main className="md:ml-64 min-h-screen pt-4 md:pt-0" id="main-content" role="main">
         <div className="p-4 md:p-8">
           {/* CustomerContent handles all auth-dependent rendering */}
-          <CustomerContent>{children}</CustomerContent>
+          <CustomerContent mobileMenuOpen={mobileMenuOpen}>{children}</CustomerContent>
         </div>
       </main>
     </div>
