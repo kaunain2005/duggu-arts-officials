@@ -13,6 +13,7 @@ export function getAdminApp(): App {
   const projectId = process.env.FIREBASE_ADMIN_PROJECT_ID;
   const clientEmail = process.env.FIREBASE_ADMIN_CLIENT_EMAIL;
   const privateKey = process.env.FIREBASE_ADMIN_PRIVATE_KEY?.replace(/\\n/g, '\n');
+  const databaseId = process.env.FIREBASE_ADMIN_DATABASE_ID; // Optional: for non-default Firestore locations
 
   if (!projectId || !clientEmail || !privateKey) {
     throw new Error('Firebase Admin config missing. Check FIREBASE_ADMIN_* env vars.');
@@ -37,7 +38,15 @@ export function getAdminAuth(): Auth {
 
 export function getAdminDb(): Firestore {
   if (adminDb) return adminDb;
-  adminDb = getFirestore(getAdminApp());
+  const app = getAdminApp();
+  const databaseId = process.env.FIREBASE_ADMIN_DATABASE_ID;
+  
+  if (databaseId && databaseId !== '(default)') {
+    adminDb = getFirestore(app, databaseId);
+  } else {
+    adminDb = getFirestore(app);
+  }
+  
   return adminDb;
 }
 

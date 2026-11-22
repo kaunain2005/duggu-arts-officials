@@ -1,7 +1,8 @@
-'use client';
+"use client";
 
-import { ThemeProvider } from '@/lib/theme/ThemeProvider';
-import { Toaster } from '@/components/ui/toaster';
+import { ThemeProvider } from "@/lib/theme/ThemeProvider";
+import { Toaster } from "@/components/ui/toaster";
+import { AuthProvider } from "@/contexts/AuthContext";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
@@ -9,10 +10,12 @@ export function Providers({ children }: { children: React.ReactNode }) {
       attribute="data-theme"
       defaultTheme="system"
       enableSystem
-      themes={['light', 'dark', 'pink']}
+      themes={["light", "dark", "pink"]}
     >
-      {children}
-      <Toaster />
+      <AuthProvider>
+        {children}
+        <Toaster />
+      </AuthProvider>
     </ThemeProvider>
   );
 }

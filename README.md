@@ -4,6 +4,9 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 First, run the development server:
 
+
+enable this for project : https://console.cloud.google.com/apis/library/firestore.googleapis.com?project=project-name
+
 ```bash
 npm run dev
 # or

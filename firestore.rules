@@ -1,0 +1,265 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ============================================
+    // Helper Functions
+    // ============================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.profile.role == 'admin';
+    }
+    
+    function isManager() {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.profile.role in ['admin', 'manager'];
+    }
+    
+    function isAdminOrManager() {
+      return isAdmin() || isManager();
+    }
+    
+    function isCustomer() {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.profile.role == 'customer';
+    }
+    
+    function hasPermission(permission) {
+      return isAuthenticated() && 
+        permission in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.profile.permissions;
+    }
+    
+    function validOrderStatusTransition(oldStatus, newStatus) {
+      let validTransitions = {
+        'pending': ['awaiting_confirmation', 'cancelled'],
+        'awaiting_confirmation': ['confirmed', 'cancelled'],
+        'confirmed': ['preparing', 'cancelled'],
+        'preparing': ['ready_to_ship', 'cancelled'],
+        'ready_to_ship': ['shipped', 'cancelled'],
+        'shipped': ['delivered', 'cancelled'],
+        'delivered': ['refunded'],
+        'cancelled': [],
+        'refunded': []
+      };
+      return newStatus in validTransitions[oldStatus];
+    }
+    
+    function validReviewStatusTransition(oldStatus, newStatus) {
+      let validTransitions = {
+        'pending': ['approved', 'rejected'],
+        'approved': ['rejected'],
+        'rejected': ['approved']
+      };
+      return newStatus in validTransitions[oldStatus];
+    }
+    
+    function validCustomRequestStatusTransition(oldStatus, newStatus) {
+      let validTransitions = {
+        'submitted': ['quoted', 'cancelled'],
+        'quoted': ['approved', 'cancelled'],
+        'approved': ['in_progress', 'cancelled'],
+        'in_progress': ['completed', 'cancelled'],
+        'completed': [],
+        'cancelled': []
+      };
+      return newStatus in validTransitions[oldStatus];
+    }
+    
+    // ============================================
+    // Users Collection
+    // ============================================
+    match /users/{userId} {
+      // Profile subcollection
+      match /profile/{docId} {
+        allow read: if isOwner(userId) || isAdminOrManager();
+        allow write: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) || isAdmin();
+      }
+      
+      // Addresses subcollection
+      match /addresses/{addressId} {
+        allow read: if isOwner(userId) || isAdminOrManager();
+        allow write: if isOwner(userId);
+        allow create: if isOwner(userId);
+        allow delete: if isOwner(userId);
+      }
+      
+      // Wishlist subcollection
+      match /wishlist/{wishlistId} {
+        allow read: if isOwner(userId);
+        allow write: if isOwner(userId);
+        allow create: if isOwner(userId);
+        allow delete: if isOwner(userId);
+      }
+      
+      // Orders subcollection (for user's own orders)
+      match /orders/{orderId} {
+        allow read: if isOwner(userId) || isAdminOrManager();
+        allow create: if isOwner(userId);
+        // Status updates only via admin or specific transitions
+        allow update: if isAdminOrManager() || 
+          (isOwner(userId) && validOrderStatusTransition(resource.data.status, request.resource.data.status));
+      }
+      
+      // Reviews subcollection
+      match /reviews/{reviewId} {
+        allow read: if isOwner(userId) || isAdminOrManager();
+        allow create: if isOwner(userId);
+        allow update: if isOwner(userId) && request.resource.data.status == 'pending';
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+      
+      // Custom requests subcollection
+      match /customRequests/{requestId} {
+        allow read: if isOwner(userId) || isAdminOrManager();
+        allow create: if isOwner(userId);
+        allow update: if isOwner(userId) && validCustomRequestStatusTransition(resource.data.status, request.resource.data.status);
+      }
+    }
+    
+    // ============================================
+    // Products Collection
+    // ============================================
+    match /products/{productId} {
+      allow read: if resource.data.status == 'published' || isAdminOrManager();
+      allow write: if isAdminOrManager();
+      allow create: if isAdminOrManager();
+      allow delete: if isAdmin();
+      
+      // Variants subcollection
+      match /variants/{variantId} {
+        allow read: if get(/databases/$(database)/documents/products/$(productId)).data.status == 'published' || isAdminOrManager();
+        allow write: if isAdminOrManager();
+        allow create: if isAdminOrManager();
+        allow delete: if isAdmin();
+      }
+      
+      // Images subcollection
+      match /images/{imageId} {
+        allow read: if get(/databases/$(database)/documents/products/$(productId)).data.status == 'published' || isAdminOrManager();
+        allow write: if isAdminOrManager();
+        allow create: if isAdminOrManager();
+        allow delete: if isAdmin();
+      }
+    }
+    
+    // ============================================
+    // Categories Collection
+    // ============================================
+    match /categories/{categoryId} {
+      allow read: if true; // Public read for navigation
+      allow write: if isAdminOrManager();
+      allow create: if isAdminOrManager();
+      allow delete: if isAdmin();
+    }
+    
+    // ============================================
+    // Orders Collection (top-level for admin queries)
+    // ============================================
+    match /orders/{orderId} {
+      // Customers can read their own orders
+      allow read: if isOwner(resource.data.userId) || isAdminOrManager();
+      // Customers create orders via server-side transaction (not directly)
+      allow create: if false; // Handled by server
+      // Status updates only by admin/manager with valid transitions
+      allow update: if isAdminOrManager() && 
+        validOrderStatusTransition(resource.data.status, request.resource.data.status);
+      allow delete: if false; // Orders are never deleted, only cancelled
+      
+      // Order items subcollection
+      match /items/{itemId} {
+        allow read: if isOwner(get(/databases/$(database)/documents/orders/$(orderId)).data.userId) || isAdminOrManager();
+        allow write: if false; // Created with order
+      }
+      
+      // Status history subcollection
+      match /statusHistory/{historyId} {
+        allow read: if isOwner(get(/databases/$(database)/documents/orders/$(orderId)).data.userId) || isAdminOrManager();
+        allow write: if false; // Created by server
+      }
+    }
+    
+    // ============================================
+    // Inventory Collection
+    // ============================================
+    match /inventory/{productId} {
+      allow read: if isAdminOrManager();
+      allow write: if isAdminOrManager();
+      
+      // Movements subcollection
+      match /movements/{movementId} {
+        allow read: if isAdminOrManager();
+        allow write: if isAdminOrManager(); // Created by server transactions
+      }
+    }
+    
+    // ============================================
+    // Reviews Collection (top-level for queries)
+    // ============================================
+    match /reviews/{reviewId} {
+      allow read: if resource.data.status == 'approved' || 
+        isOwner(resource.data.userId) || isAdminOrManager();
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update: if isAdminOrManager() && 
+        validReviewStatusTransition(resource.data.status, request.resource.data.status);
+      allow delete: if isOwner(resource.data.userId) || isAdmin();
+    }
+    
+    // ============================================
+    // Custom Requests Collection (top-level)
+    // ============================================
+    match /customRequests/{requestId} {
+      allow read: if isOwner(resource.data.userId) || isAdminOrManager();
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update: if isAdminOrManager() && 
+        validCustomRequestStatusTransition(resource.data.status, request.resource.data.status);
+      allow delete: if isAdmin();
+    }
+    
+    // ============================================
+    // Settings Collection (singletons)
+    // ============================================
+    match /settings/{settingId} {
+      allow read: if true; // Public settings
+      allow write: if isAdmin();
+      allow create: if isAdmin();
+      allow delete: if false;
+    }
+    
+    // ============================================
+    // Carts Collection (per user)
+    // ============================================
+    match /carts/{userId} {
+      allow read: if isOwner(userId);
+      allow write: if isOwner(userId);
+      allow create: if isOwner(userId);
+      allow delete: if isOwner(userId);
+    }
+    
+    // ============================================
+    // Wishlists Collection (top-level alternative)
+    // ============================================
+    match /wishlists/{wishlistId} {
+      allow read: if isOwner(resource.data.userId);
+      allow write: if isOwner(resource.data.userId);
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow delete: if isOwner(resource.data.userId);
+    }
+    
+    // ============================================
+    // Deny all other access
+    // ============================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
